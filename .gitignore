@@ -3,3 +3,6 @@ python/build/
 python/holysht/_holysht_core*.so
 python/holysht/__pycache__/
 python/tests/__pycache__/
+python/benchmark_*.out
+python/benchmark_*.err
+python/benchmark_results.png

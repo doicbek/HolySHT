@@ -407,6 +407,24 @@ alm_s2 = holysht.map2alm(map_s, 0, nside, lmax)
 </tr>
 </table>
 
+## Performance
+
+Single-threaded benchmark on an Intel Xeon Platinum 8358, comparing
+HolySHT (Python) against healpy 1.19 for spin-0 transforms:
+
+![Benchmark](benchmark.png)
+
+**Top row:** HolySHT is 1.5--4.7x faster than healpy, with the advantage
+growing at higher resolution (DUCC's newer SHT algorithms have better
+asymptotic scaling). At nside=2048, `alm2map` takes 2.9 s vs 13.7 s
+and `map2alm` takes 20.9 s vs 94.1 s.
+
+**Bottom row:** Batching multiple maps into a single call amortizes
+setup cost and (with multiple threads) parallelizes across both maps
+and rings. Even single-threaded, `map2alm` per-map cost drops ~19%
+from N=1 to N=2+ thanks to FFT plan reuse inside DUCC's batch
+functions. healpy has no native batch mode.
+
 ## Tests
 
 **MATLAB:**
