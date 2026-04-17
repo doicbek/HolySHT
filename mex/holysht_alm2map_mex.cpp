@@ -110,44 +110,22 @@ static void alm2map_impl(
 
     vector<T> map_buf(N * map_stride);
 
-    array<size_t,2> alm_shape = {ncomp, nalm};
-    array<size_t,2> map_shape = {ncomp, npix};
-
-    size_t nt = (nthreads == 0)
-        ? std::thread::hardware_concurrency()
-        : nthreads;
-    if (nt == 0) nt = 1;
-    nt = min(nt, N);
-
-    auto worker = [&](size_t ib_lo, size_t ib_hi) {
-        for (size_t ib = ib_lo; ib < ib_hi; ++ib) {
-            const complex<T> *ab = alm_buf.data() + ib * alm_stride;
-            T *mb = map_buf.data() + ib * map_stride;
-            cmav<complex<T>,2> alm_v(ab, alm_shape);
-            vmav<T,2> map_v(mb, map_shape);
-            /* For single-map call we pass nthreads through to DUCC; for
-             * batch we run single-threaded DUCC and parallelise across N. */
-            size_t inner_nt = is_batch ? 1 : nthreads;
-            synthesis(alm_v, map_v, spin, lmax, mstart_v, 1,
-                      theta_v, nphi_v, phi0_v, ringstart_v,
-                      ringfactor_v, 1, inner_nt, STANDARD, false);
-        }
-    };
-
-    if (!is_batch || nt <= 1) {
-        worker(0, N);
+    if (is_batch) {
+        array<size_t,3> alm_shape3 = {N, ncomp, nalm};
+        array<size_t,3> map_shape3 = {N, ncomp, npix};
+        cmav<complex<T>,3> alm_v(alm_buf.data(), alm_shape3);
+        vmav<T,3> map_v(map_buf.data(), map_shape3);
+        synthesis_batch(alm_v, map_v, spin, lmax, mstart_v, 1,
+                        theta_v, nphi_v, phi0_v, ringstart_v,
+                        ringfactor_v, 1, nthreads, STANDARD, false);
     } else {
-        vector<thread> threads;
-        threads.reserve(nt);
-        size_t per = N / nt;
-        size_t rem = N % nt;
-        size_t lo = 0;
-        for (size_t t = 0; t < nt; ++t) {
-            size_t hi = lo + per + (t < rem ? 1 : 0);
-            threads.emplace_back(worker, lo, hi);
-            lo = hi;
-        }
-        for (auto &th : threads) th.join();
+        array<size_t,2> alm_shape = {ncomp, nalm};
+        array<size_t,2> map_shape = {ncomp, npix};
+        cmav<complex<T>,2> alm_v(alm_buf.data(), alm_shape);
+        vmav<T,2> map_v(map_buf.data(), map_shape);
+        synthesis(alm_v, map_v, spin, lmax, mstart_v, 1,
+                  theta_v, nphi_v, phi0_v, ringstart_v,
+                  ringfactor_v, 1, nthreads, STANDARD, false);
     }
 
     /* Output: matches input dimensionality */

@@ -6,6 +6,10 @@
  * (holysht/transforms.py) handles validation, ring geometry, and the
  * user-facing API.
  *
+ * Batch transforms use DUCC's native synthesis_batch / adjoint_synthesis_batch
+ * which parallelise over rings and batch items internally, reusing FFT plans
+ * across the batch dimension.
+ *
  * Unlike the MEX gateway, numpy arrays are already row-major with
  * interleaved complex, so we can pass data directly to DUCC.
  */
@@ -20,8 +24,6 @@
 #include <vector>
 #include <complex>
 #include <array>
-#include <thread>
-#include <algorithm>
 #include <stdexcept>
 
 namespace py = pybind11;
@@ -126,47 +128,24 @@ static py::array alm2map_impl(
     const complex<T> *alm_ptr = static_cast<const complex<T>*>(alm_info.ptr);
     T *map_ptr = static_cast<T*>(map_out.mutable_data());
 
-    const size_t alm_stride = ncomp * nalm;
-    const size_t map_stride = ncomp * npix;
-
-    array<size_t,2> alm_shape = {ncomp, nalm};
-    array<size_t,2> map_shape = {ncomp, npix};
-
-    size_t nt = (nthreads == 0)
-        ? std::thread::hardware_concurrency()
-        : nthreads;
-    if (nt == 0) nt = 1;
-    nt = min(nt, N);
-
-    auto worker = [&](size_t ib_lo, size_t ib_hi) {
-        for (size_t ib = ib_lo; ib < ib_hi; ++ib) {
-            const complex<T> *ab = alm_ptr + ib * alm_stride;
-            T *mb = map_ptr + ib * map_stride;
-            cmav<complex<T>,2> alm_v(ab, alm_shape);
-            vmav<T,2> map_v(mb, map_shape);
-            size_t inner_nt = is_batch ? 1 : nthreads;
-            synthesis(alm_v, map_v, spin, lmax, mstart_v, 1,
-                      theta_v, nphi_v, phi0_v, ringstart_v,
-                      ringfactor_v, 1, inner_nt, STANDARD, false);
-        }
-    };
-
     py::gil_scoped_release release;
 
-    if (!is_batch || nt <= 1) {
-        worker(0, N);
+    if (is_batch) {
+        array<size_t,3> alm_shape3 = {N, ncomp, nalm};
+        array<size_t,3> map_shape3 = {N, ncomp, npix};
+        cmav<complex<T>,3> alm_v(alm_ptr, alm_shape3);
+        vmav<T,3> map_v(map_ptr, map_shape3);
+        synthesis_batch(alm_v, map_v, spin, lmax, mstart_v, 1,
+                        theta_v, nphi_v, phi0_v, ringstart_v,
+                        ringfactor_v, 1, nthreads, STANDARD, false);
     } else {
-        vector<thread> threads;
-        threads.reserve(nt);
-        size_t per = N / nt;
-        size_t rem = N % nt;
-        size_t lo = 0;
-        for (size_t t = 0; t < nt; ++t) {
-            size_t hi = lo + per + (t < rem ? 1 : 0);
-            threads.emplace_back(worker, lo, hi);
-            lo = hi;
-        }
-        for (auto &th : threads) th.join();
+        array<size_t,2> alm_shape = {ncomp, nalm};
+        array<size_t,2> map_shape = {ncomp, npix};
+        cmav<complex<T>,2> alm_v(alm_ptr, alm_shape);
+        vmav<T,2> map_v(map_ptr, map_shape);
+        synthesis(alm_v, map_v, spin, lmax, mstart_v, 1,
+                  theta_v, nphi_v, phi0_v, ringstart_v,
+                  ringfactor_v, 1, nthreads, STANDARD, false);
     }
 
     return map_out;
@@ -248,86 +227,88 @@ static py::array map2alm_impl(
     const size_t map_stride = ncomp * npix;
     const size_t alm_stride = ncomp * nalm;
 
-    array<size_t,2> map_shape = {ncomp, npix};
-    array<size_t,2> alm_shape = {ncomp, nalm};
-
     T w = static_cast<T>(weight);
 
-    size_t nt = (nthreads == 0)
-        ? std::thread::hardware_concurrency()
-        : nthreads;
-    if (nt == 0) nt = 1;
-    nt = min(nt, N);
-
-    auto worker = [&](size_t ib_lo, size_t ib_hi) {
-        vector<T> map_w(map_stride);
-        vector<T> map_synth(map_stride);
-        vector<complex<T>> dalm(alm_stride);
-
-        for (size_t ib = ib_lo; ib < ib_hi; ++ib) {
-            const T *mb = map_ptr + ib * map_stride;
-            complex<T> *ab = alm_ptr + ib * alm_stride;
-            size_t inner_nt = is_batch ? 1 : nthreads;
-
-            /* Initial adjoint: alm = A^T(W * map) */
-            for (size_t i = 0; i < map_stride; ++i)
-                map_w[i] = mb[i] * w;
-
-            {
-                cmav<T,2> mw_view(map_w.data(), map_shape);
-                vmav<complex<T>,2> alm_view(ab, alm_shape);
-                adjoint_synthesis(alm_view, mw_view, spin, lmax, mstart_v, 1,
-                                  theta_v, nphi_v, phi0_v, ringstart_v,
-                                  ringfactor_v, 1, inner_nt, STANDARD, false);
-            }
-
-            /* Jacobi iterations */
-            for (size_t it = 0; it < n_iter; ++it) {
-                /* Forward: map_synth = A * alm */
-                {
-                    cmav<complex<T>,2> alm_cv(ab, alm_shape);
-                    vmav<T,2> ms_view(map_synth.data(), map_shape);
-                    synthesis(alm_cv, ms_view, spin, lmax, mstart_v, 1,
-                              theta_v, nphi_v, phi0_v, ringstart_v,
-                              ringfactor_v, 1, inner_nt, STANDARD, false);
-                }
-
-                /* Weighted residual: map_synth = W * (map - A*alm) */
-                for (size_t i = 0; i < map_stride; ++i)
-                    map_synth[i] = (mb[i] - map_synth[i]) * w;
-
-                /* Adjoint of residual: dalm = A^T(W * residual) */
-                {
-                    cmav<T,2> dmap_view(map_synth.data(), map_shape);
-                    vmav<complex<T>,2> dalm_view(dalm.data(), alm_shape);
-                    adjoint_synthesis(dalm_view, dmap_view, spin, lmax, mstart_v, 1,
-                                      theta_v, nphi_v, phi0_v, ringstart_v,
-                                      ringfactor_v, 1, inner_nt, STANDARD, false);
-                }
-
-                /* Update: alm += dalm */
-                for (size_t i = 0; i < alm_stride; ++i)
-                    ab[i] += dalm[i];
-            }
-        }
-    };
+    /* Scratch buffers */
+    const size_t total_map = N * map_stride;
+    const size_t total_alm = N * alm_stride;
+    vector<T> map_scratch(total_map);
+    vector<complex<T>> dalm(total_alm);
 
     py::gil_scoped_release release;
 
-    if (!is_batch || nt <= 1) {
-        worker(0, N);
-    } else {
-        vector<thread> threads;
-        threads.reserve(nt);
-        size_t per = N / nt;
-        size_t rem = N % nt;
-        size_t lo = 0;
-        for (size_t t = 0; t < nt; ++t) {
-            size_t hi = lo + per + (t < rem ? 1 : 0);
-            threads.emplace_back(worker, lo, hi);
-            lo = hi;
+    if (is_batch) {
+        array<size_t,3> map_shape3 = {N, ncomp, npix};
+        array<size_t,3> alm_shape3 = {N, ncomp, nalm};
+
+        /* Initial adjoint: alm = A^T(W * map) */
+        for (size_t i = 0; i < total_map; ++i)
+            map_scratch[i] = map_ptr[i] * w;
+        {
+            cmav<T,3> mw_view(map_scratch.data(), map_shape3);
+            vmav<complex<T>,3> alm_view(alm_ptr, alm_shape3);
+            adjoint_synthesis_batch(alm_view, mw_view, spin, lmax, mstart_v, 1,
+                                    theta_v, nphi_v, phi0_v, ringstart_v,
+                                    ringfactor_v, 1, nthreads, STANDARD, false);
         }
-        for (auto &th : threads) th.join();
+
+        /* Jacobi iterations */
+        for (size_t it = 0; it < n_iter; ++it) {
+            {
+                cmav<complex<T>,3> alm_cv(alm_ptr, alm_shape3);
+                vmav<T,3> ms_view(map_scratch.data(), map_shape3);
+                synthesis_batch(alm_cv, ms_view, spin, lmax, mstart_v, 1,
+                                theta_v, nphi_v, phi0_v, ringstart_v,
+                                ringfactor_v, 1, nthreads, STANDARD, false);
+            }
+            for (size_t i = 0; i < total_map; ++i)
+                map_scratch[i] = (map_ptr[i] - map_scratch[i]) * w;
+            {
+                cmav<T,3> dmap_view(map_scratch.data(), map_shape3);
+                vmav<complex<T>,3> dalm_view(dalm.data(), alm_shape3);
+                adjoint_synthesis_batch(dalm_view, dmap_view, spin, lmax, mstart_v, 1,
+                                        theta_v, nphi_v, phi0_v, ringstart_v,
+                                        ringfactor_v, 1, nthreads, STANDARD, false);
+            }
+            for (size_t i = 0; i < total_alm; ++i)
+                alm_ptr[i] += dalm[i];
+        }
+    } else {
+        array<size_t,2> map_shape = {ncomp, npix};
+        array<size_t,2> alm_shape = {ncomp, nalm};
+
+        /* Initial adjoint: alm = A^T(W * map) */
+        for (size_t i = 0; i < total_map; ++i)
+            map_scratch[i] = map_ptr[i] * w;
+        {
+            cmav<T,2> mw_view(map_scratch.data(), map_shape);
+            vmav<complex<T>,2> alm_view(alm_ptr, alm_shape);
+            adjoint_synthesis(alm_view, mw_view, spin, lmax, mstart_v, 1,
+                              theta_v, nphi_v, phi0_v, ringstart_v,
+                              ringfactor_v, 1, nthreads, STANDARD, false);
+        }
+
+        /* Jacobi iterations */
+        for (size_t it = 0; it < n_iter; ++it) {
+            {
+                cmav<complex<T>,2> alm_cv(alm_ptr, alm_shape);
+                vmav<T,2> ms_view(map_scratch.data(), map_shape);
+                synthesis(alm_cv, ms_view, spin, lmax, mstart_v, 1,
+                          theta_v, nphi_v, phi0_v, ringstart_v,
+                          ringfactor_v, 1, nthreads, STANDARD, false);
+            }
+            for (size_t i = 0; i < total_map; ++i)
+                map_scratch[i] = (map_ptr[i] - map_scratch[i]) * w;
+            {
+                cmav<T,2> dmap_view(map_scratch.data(), map_shape);
+                vmav<complex<T>,2> dalm_view(dalm.data(), alm_shape);
+                adjoint_synthesis(dalm_view, dmap_view, spin, lmax, mstart_v, 1,
+                                  theta_v, nphi_v, phi0_v, ringstart_v,
+                                  ringfactor_v, 1, nthreads, STANDARD, false);
+            }
+            for (size_t i = 0; i < total_alm; ++i)
+                alm_ptr[i] += dalm[i];
+        }
     }
 
     return alm_out;

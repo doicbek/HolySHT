@@ -6,6 +6,10 @@
  * batch (3-D) inputs in both double and single precision.  Spin must be
  * 0 or 2 (T or Q/U).
  *
+ * Batch transforms use DUCC's native synthesis_batch / adjoint_synthesis_batch
+ * which parallelise over rings and batch items internally, reusing FFT plans
+ * across the batch dimension.
+ *
  * Usage:
  *   alm = holysht_map2alm_mex(map, lmax, spin,
  *             theta, nphi, phi0, ringstart,
@@ -35,8 +39,6 @@
 #include <vector>
 #include <complex>
 #include <array>
-#include <thread>
-#include <algorithm>
 
 using namespace ducc0;
 using namespace ducc0_mex;
@@ -62,7 +64,7 @@ static size_t min_mapdim(const vector<size_t> &nphi,
 }
 
 template<typename T>
-static void map2alm_single(
+static void map2alm_impl(
     const mxArray *map_arr, mxArray *&alm_out,
     size_t lmax, size_t spin,
     const vector<size_t> &mstart_vec,
@@ -70,121 +72,17 @@ static void map2alm_single(
     const cmav<double,1> &phi0_v, const cmav<size_t,1> &ringstart_v,
     const cmav<double,1> &ringfactor_v,
     T weight, size_t n_iter, size_t nthreads,
-    size_t nmaps, size_t ncomp, size_t nalm, size_t npix,
+    bool is_batch,
+    size_t N, size_t ncomp, size_t nalm, size_t npix,
     mxClassID class_id)
 {
-    const size_t mstart_len = lmax + 1;
-    array<size_t,1> ms_shape = {mstart_len};
-    cmav<size_t,1> mstart_v(mstart_vec.data(), ms_shape);
-
-    /* Copy map: MATLAB col-major [ncomp, npix] -> row-major */
-    vector<T> map_buf(nmaps * npix);
-    {
-        const T *real_data;
-        if (class_id == mxDOUBLE_CLASS)
-            real_data = (const T *)mxGetPr(map_arr);
-        else
-            real_data = (const T *)mxGetData(map_arr);
-
-        for (size_t im = 0; im < nmaps; ++im)
-            for (size_t ip = 0; ip < npix; ++ip) {
-                size_t idx_ml = im + ip * nmaps;
-                size_t idx_rm = im * npix + ip;
-                map_buf[idx_rm] = real_data[idx_ml];
-            }
-    }
-
-    array<size_t,2> map_shape = {nmaps, npix};
-    array<size_t,2> alm_shape = {ncomp, nalm};
-
-    /* Initial adjoint synthesis: alm = A^T(W * map) */
-    vector<T> map_scratch(nmaps * npix);
-    for (size_t i = 0; i < nmaps * npix; ++i)
-        map_scratch[i] = map_buf[i] * weight;
-
-    vector<complex<T>> alm_buf(ncomp * nalm, complex<T>(0));
-    {
-        cmav<T,2> mw_view(map_scratch.data(), map_shape);
-        vmav<complex<T>,2> alm_view(alm_buf.data(), alm_shape);
-        adjoint_synthesis(alm_view, mw_view, spin, lmax, mstart_v, 1,
-                          theta_v, nphi_v, phi0_v, ringstart_v,
-                          ringfactor_v, 1, nthreads, STANDARD, false);
-    }
-
-    /* Jacobi iterations: alm += A^T( W * (map - A*alm) ) */
-    vector<complex<T>> dalm(ncomp * nalm);
-
-    for (size_t it = 0; it < n_iter; ++it) {
-        /* Forward: map_scratch = A * alm */
-        {
-            cmav<complex<T>,2> alm_cv(alm_buf.data(), alm_shape);
-            vmav<T,2> ms_view(map_scratch.data(), map_shape);
-            synthesis(alm_cv, ms_view, spin, lmax, mstart_v, 1,
-                      theta_v, nphi_v, phi0_v, ringstart_v,
-                      ringfactor_v, 1, nthreads, STANDARD, false);
-        }
-
-        /* Weighted residual in-place: map_scratch = W * (map - A*alm) */
-        for (size_t i = 0; i < nmaps * npix; ++i)
-            map_scratch[i] = (map_buf[i] - map_scratch[i]) * weight;
-
-        /* Adjoint of weighted residual: dalm = A^T(W * residual) */
-        {
-            cmav<T,2> dmap_view(map_scratch.data(), map_shape);
-            vmav<complex<T>,2> dalm_view(dalm.data(), alm_shape);
-            adjoint_synthesis(dalm_view, dmap_view, spin, lmax, mstart_v, 1,
-                              theta_v, nphi_v, phi0_v, ringstart_v,
-                              ringfactor_v, 1, nthreads, STANDARD, false);
-        }
-
-        /* Update: alm += dalm (Richardson iteration) */
-        for (size_t i = 0; i < ncomp * nalm; ++i)
-            alm_buf[i] += dalm[i];
-    }
-
-    /* Copy alm to MATLAB output (complex, col-major, split real/imag) */
-    mwSize out_dims[2] = {(mwSize)ncomp, (mwSize)nalm};
-    alm_out = mxCreateNumericArray(2, out_dims, class_id, mxCOMPLEX);
-
-    using real_t = T;
-    real_t *out_re, *out_im;
-    if (class_id == mxDOUBLE_CLASS) {
-        out_re = (real_t *)mxGetPr(alm_out);
-        out_im = (real_t *)mxGetPi(alm_out);
-    } else {
-        out_re = (real_t *)mxGetData(alm_out);
-        out_im = (real_t *)mxGetImagData(alm_out);
-    }
-
-    for (size_t ic = 0; ic < ncomp; ++ic)
-        for (size_t ia = 0; ia < nalm; ++ia) {
-            size_t idx_rm = ic * nalm + ia;
-            size_t idx_ml = ic + ia * ncomp;
-            out_re[idx_ml] = alm_buf[idx_rm].real();
-            out_im[idx_ml] = alm_buf[idx_rm].imag();
-        }
-}
-
-template<typename T>
-static void map2alm_batch(
-    const mxArray *map_arr, mxArray *&alm_out,
-    size_t lmax, size_t spin,
-    const vector<size_t> &mstart_vec,
-    const cmav<double,1> &theta_v, const cmav<size_t,1> &nphi_v,
-    const cmav<double,1> &phi0_v, const cmav<size_t,1> &ringstart_v,
-    const cmav<double,1> &ringfactor_v,
-    T weight, size_t n_iter, size_t nthreads,
-    size_t N, size_t nmaps, size_t ncomp, size_t nalm, size_t npix,
-    mxClassID class_id)
-{
-    const size_t mstart_len = lmax + 1;
-    array<size_t,1> ms_shape = {mstart_len};
-    cmav<size_t,1> mstart_v(mstart_vec.data(), ms_shape);
-
-    const size_t map_stride = nmaps * npix;
+    const size_t map_stride = ncomp * npix;
     const size_t alm_stride = ncomp * nalm;
 
-    /* Copy map: MATLAB [N, nmaps, npix] col-major -> row-major */
+    array<size_t,1> ms_shape = {lmax + 1};
+    cmav<size_t,1> mstart_v(mstart_vec.data(), ms_shape);
+
+    /* Copy map: MATLAB col-major -> row-major */
     vector<T> map_buf(N * map_stride);
     {
         const T *real_data;
@@ -193,103 +91,144 @@ static void map2alm_batch(
         else
             real_data = (const T *)mxGetData(map_arr);
 
-        for (size_t ib = 0; ib < N; ++ib)
-            for (size_t im = 0; im < nmaps; ++im)
+        if (is_batch) {
+            for (size_t ib = 0; ib < N; ++ib)
+                for (size_t ic = 0; ic < ncomp; ++ic)
+                    for (size_t ip = 0; ip < npix; ++ip) {
+                        size_t idx_ml = ib + ic * N + ip * N * ncomp;
+                        size_t idx_rm = ib * map_stride + ic * npix + ip;
+                        map_buf[idx_rm] = real_data[idx_ml];
+                    }
+        } else {
+            for (size_t ic = 0; ic < ncomp; ++ic)
                 for (size_t ip = 0; ip < npix; ++ip) {
-                    size_t idx_ml = ib + im * N + ip * N * nmaps;
-                    size_t idx_rm = ib * map_stride + im * npix + ip;
+                    size_t idx_ml = ic + ip * ncomp;
+                    size_t idx_rm = ic * npix + ip;
                     map_buf[idx_rm] = real_data[idx_ml];
                 }
+        }
     }
 
-    array<size_t,2> map_shape  = {nmaps, npix};
-    array<size_t,2> alm_shape  = {ncomp, nalm};
+    vector<complex<T>> alm_buf(N * alm_stride, complex<T>(0));
+    vector<T> map_scratch(N * map_stride);
+    vector<complex<T>> dalm(N * alm_stride);
+    const size_t total_map = N * map_stride;
+    const size_t total_alm = N * alm_stride;
 
-    vector<complex<T>> alm_buf(N * alm_stride);
+    if (is_batch) {
+        array<size_t,3> map_shape3 = {N, ncomp, npix};
+        array<size_t,3> alm_shape3 = {N, ncomp, nalm};
 
-    size_t nt = (nthreads == 0)
-        ? std::thread::hardware_concurrency()
-        : nthreads;
-    if (nt == 0) nt = 1;
-    nt = min(nt, N);
+        /* Initial adjoint: alm = A^T(W * map) */
+        for (size_t i = 0; i < total_map; ++i)
+            map_scratch[i] = map_buf[i] * weight;
+        {
+            cmav<T,3> mw_view(map_scratch.data(), map_shape3);
+            vmav<complex<T>,3> alm_view(alm_buf.data(), alm_shape3);
+            adjoint_synthesis_batch(alm_view, mw_view, spin, lmax, mstart_v, 1,
+                                    theta_v, nphi_v, phi0_v, ringstart_v,
+                                    ringfactor_v, 1, nthreads, STANDARD, false);
+        }
 
-    auto worker = [&](size_t ib_lo, size_t ib_hi) {
-        vector<T>          map_w(map_stride);
-        vector<T>          map_synth(map_stride);
-        vector<complex<T>> dalm_tmp(alm_stride);
-
-        for (size_t ib = ib_lo; ib < ib_hi; ++ib) {
-            T *mb = map_buf.data() + ib * map_stride;
-            complex<T> *ab = alm_buf.data() + ib * alm_stride;
-
-            for (size_t i = 0; i < map_stride; ++i)
-                map_w[i] = mb[i] * weight;
+        /* Jacobi iterations */
+        for (size_t it = 0; it < n_iter; ++it) {
+            /* Forward: map_scratch = A * alm */
             {
-                cmav<T,2> mw_view(map_w.data(), map_shape);
-                vmav<complex<T>,2> alm_view(ab, alm_shape);
-                adjoint_synthesis(alm_view, mw_view, spin, lmax, mstart_v, 1,
-                                  theta_v, nphi_v, phi0_v, ringstart_v,
-                                  ringfactor_v, 1, 1, STANDARD, false);
+                cmav<complex<T>,3> alm_cv(alm_buf.data(), alm_shape3);
+                vmav<T,3> ms_view(map_scratch.data(), map_shape3);
+                synthesis_batch(alm_cv, ms_view, spin, lmax, mstart_v, 1,
+                                theta_v, nphi_v, phi0_v, ringstart_v,
+                                ringfactor_v, 1, nthreads, STANDARD, false);
             }
-            for (size_t it = 0; it < n_iter; ++it) {
-                {
-                    cmav<complex<T>,2> alm_cv(ab, alm_shape);
-                    vmav<T,2> ms_view(map_synth.data(), map_shape);
-                    synthesis(alm_cv, ms_view, spin, lmax, mstart_v, 1,
+            /* Weighted residual: map_scratch = W * (map - A*alm) */
+            for (size_t i = 0; i < total_map; ++i)
+                map_scratch[i] = (map_buf[i] - map_scratch[i]) * weight;
+            /* Adjoint of residual: dalm = A^T(W * residual) */
+            {
+                cmav<T,3> dmap_view(map_scratch.data(), map_shape3);
+                vmav<complex<T>,3> dalm_view(dalm.data(), alm_shape3);
+                adjoint_synthesis_batch(dalm_view, dmap_view, spin, lmax, mstart_v, 1,
+                                        theta_v, nphi_v, phi0_v, ringstart_v,
+                                        ringfactor_v, 1, nthreads, STANDARD, false);
+            }
+            /* Update: alm += dalm */
+            for (size_t i = 0; i < total_alm; ++i)
+                alm_buf[i] += dalm[i];
+        }
+    } else {
+        array<size_t,2> map_shape = {ncomp, npix};
+        array<size_t,2> alm_shape = {ncomp, nalm};
+
+        /* Initial adjoint: alm = A^T(W * map) */
+        for (size_t i = 0; i < total_map; ++i)
+            map_scratch[i] = map_buf[i] * weight;
+        {
+            cmav<T,2> mw_view(map_scratch.data(), map_shape);
+            vmav<complex<T>,2> alm_view(alm_buf.data(), alm_shape);
+            adjoint_synthesis(alm_view, mw_view, spin, lmax, mstart_v, 1,
                               theta_v, nphi_v, phi0_v, ringstart_v,
-                              ringfactor_v, 1, 1, STANDARD, false);
-                }
-                for (size_t i = 0; i < map_stride; ++i)
-                    map_synth[i] = (mb[i] - map_synth[i]) * weight;
-                {
-                    cmav<T,2> dmap_view(map_synth.data(), map_shape);
-                    vmav<complex<T>,2> dalm_view(dalm_tmp.data(), alm_shape);
-                    adjoint_synthesis(dalm_view, dmap_view, spin, lmax, mstart_v, 1,
-                                      theta_v, nphi_v, phi0_v, ringstart_v,
-                                      ringfactor_v, 1, 1, STANDARD, false);
-                }
-                for (size_t i = 0; i < alm_stride; ++i)
-                    ab[i] += dalm_tmp[i];
+                              ringfactor_v, 1, nthreads, STANDARD, false);
+        }
+
+        /* Jacobi iterations */
+        for (size_t it = 0; it < n_iter; ++it) {
+            {
+                cmav<complex<T>,2> alm_cv(alm_buf.data(), alm_shape);
+                vmav<T,2> ms_view(map_scratch.data(), map_shape);
+                synthesis(alm_cv, ms_view, spin, lmax, mstart_v, 1,
+                          theta_v, nphi_v, phi0_v, ringstart_v,
+                          ringfactor_v, 1, nthreads, STANDARD, false);
             }
+            for (size_t i = 0; i < total_map; ++i)
+                map_scratch[i] = (map_buf[i] - map_scratch[i]) * weight;
+            {
+                cmav<T,2> dmap_view(map_scratch.data(), map_shape);
+                vmav<complex<T>,2> dalm_view(dalm.data(), alm_shape);
+                adjoint_synthesis(dalm_view, dmap_view, spin, lmax, mstart_v, 1,
+                                  theta_v, nphi_v, phi0_v, ringstart_v,
+                                  ringfactor_v, 1, nthreads, STANDARD, false);
+            }
+            for (size_t i = 0; i < total_alm; ++i)
+                alm_buf[i] += dalm[i];
         }
-    };
-
-    if (nt <= 1) {
-        worker(0, N);
-    } else {
-        vector<thread> threads;
-        threads.reserve(nt);
-        size_t per = N / nt;
-        size_t rem = N % nt;
-        size_t lo = 0;
-        for (size_t t = 0; t < nt; ++t) {
-            size_t hi = lo + per + (t < rem ? 1 : 0);
-            threads.emplace_back(worker, lo, hi);
-            lo = hi;
-        }
-        for (auto &th : threads) th.join();
     }
 
-    mwSize out_dims[3] = {(mwSize)N, (mwSize)ncomp, (mwSize)nalm};
-    alm_out = mxCreateNumericArray(3, out_dims, class_id, mxCOMPLEX);
+    /* Copy alm to MATLAB output (complex, col-major, split real/imag) */
+    if (is_batch) {
+        mwSize out_dims[3] = {(mwSize)N, (mwSize)ncomp, (mwSize)nalm};
+        alm_out = mxCreateNumericArray(3, out_dims, class_id, mxCOMPLEX);
+    } else {
+        mwSize out_dims[2] = {(mwSize)ncomp, (mwSize)nalm};
+        alm_out = mxCreateNumericArray(2, out_dims, class_id, mxCOMPLEX);
+    }
 
-    using real_t = T;
-    real_t *out_re, *out_im;
+    T *out_re, *out_im;
     if (class_id == mxDOUBLE_CLASS) {
-        out_re = (real_t *)mxGetPr(alm_out);
-        out_im = (real_t *)mxGetPi(alm_out);
+        out_re = (T *)mxGetPr(alm_out);
+        out_im = (T *)mxGetPi(alm_out);
     } else {
-        out_re = (real_t *)mxGetData(alm_out);
-        out_im = (real_t *)mxGetImagData(alm_out);
+        out_re = (T *)mxGetData(alm_out);
+        out_im = (T *)mxGetImagData(alm_out);
     }
-    for (size_t ib = 0; ib < N; ++ib)
+
+    if (is_batch) {
+        for (size_t ib = 0; ib < N; ++ib)
+            for (size_t ic = 0; ic < ncomp; ++ic)
+                for (size_t ia = 0; ia < nalm; ++ia) {
+                    size_t idx_rm = ib * alm_stride + ic * nalm + ia;
+                    size_t idx_ml = ib + ic * N + ia * N * ncomp;
+                    out_re[idx_ml] = alm_buf[idx_rm].real();
+                    out_im[idx_ml] = alm_buf[idx_rm].imag();
+                }
+    } else {
         for (size_t ic = 0; ic < ncomp; ++ic)
             for (size_t ia = 0; ia < nalm; ++ia) {
-                size_t idx_rm = ib * ncomp * nalm + ic * nalm + ia;
-                size_t idx_ml = ib + ic * N + ia * N * ncomp;
+                size_t idx_rm = ic * nalm + ia;
+                size_t idx_ml = ic + ia * ncomp;
                 out_re[idx_ml] = alm_buf[idx_rm].real();
                 out_im[idx_ml] = alm_buf[idx_rm].imag();
             }
+    }
 }
 
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -317,7 +256,6 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
                 "spin must be 0 or 2");
 
         size_t ncomp = (spin == 0) ? 1 : 2;
-        size_t nmaps = ncomp;
 
         const mxArray *theta_arr     = prhs[3];
         const mxArray *nphi_arr      = prhs[4];
@@ -361,13 +299,13 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 
         if (is_batch) {
             N = dims[0];
-            if ((size_t)dims[1] != nmaps || (size_t)dims[2] != npix)
+            if ((size_t)dims[1] != ncomp || (size_t)dims[2] != npix)
                 mexErrMsgIdAndTxt("holysht:map2alm:InputError",
-                    "Batch map must be [N, %zu, %zu]", nmaps, npix);
+                    "Batch map must be [N, %zu, %zu]", ncomp, npix);
         } else if (ndim == 2) {
-            if ((size_t)dims[0] != nmaps || (size_t)dims[1] != npix)
+            if ((size_t)dims[0] != ncomp || (size_t)dims[1] != npix)
                 mexErrMsgIdAndTxt("holysht:map2alm:InputError",
-                    "Map must be [%zu, %zu]", nmaps, npix);
+                    "Map must be [%zu, %zu]", ncomp, npix);
         } else {
             mexErrMsgIdAndTxt("holysht:map2alm:InputError",
                 "Map must be 2D [ncomp, npix] or 3D [N, ncomp, npix]");
@@ -376,27 +314,15 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         mxClassID class_id = mxGetClassID(map_arr);
 
         if (class_id == mxDOUBLE_CLASS) {
-            if (is_batch)
-                map2alm_batch<double>(map_arr, plhs[0], lmax, spin,
-                    mstart_vec, theta_v, nphi_v, phi0_v, ringstart_v,
-                    ringfactor_v, (double)weight_d, n_iter, nthreads,
-                    N, nmaps, ncomp, nalm, npix, class_id);
-            else
-                map2alm_single<double>(map_arr, plhs[0], lmax, spin,
-                    mstart_vec, theta_v, nphi_v, phi0_v, ringstart_v,
-                    ringfactor_v, (double)weight_d, n_iter, nthreads,
-                    nmaps, ncomp, nalm, npix, class_id);
+            map2alm_impl<double>(map_arr, plhs[0], lmax, spin,
+                mstart_vec, theta_v, nphi_v, phi0_v, ringstart_v,
+                ringfactor_v, (double)weight_d, n_iter, nthreads,
+                is_batch, N, ncomp, nalm, npix, class_id);
         } else if (class_id == mxSINGLE_CLASS) {
-            if (is_batch)
-                map2alm_batch<float>(map_arr, plhs[0], lmax, spin,
-                    mstart_vec, theta_v, nphi_v, phi0_v, ringstart_v,
-                    ringfactor_v, (float)weight_d, n_iter, nthreads,
-                    N, nmaps, ncomp, nalm, npix, class_id);
-            else
-                map2alm_single<float>(map_arr, plhs[0], lmax, spin,
-                    mstart_vec, theta_v, nphi_v, phi0_v, ringstart_v,
-                    ringfactor_v, (float)weight_d, n_iter, nthreads,
-                    nmaps, ncomp, nalm, npix, class_id);
+            map2alm_impl<float>(map_arr, plhs[0], lmax, spin,
+                mstart_vec, theta_v, nphi_v, phi0_v, ringstart_v,
+                ringfactor_v, (float)weight_d, n_iter, nthreads,
+                is_batch, N, ncomp, nalm, npix, class_id);
         } else {
             mexErrMsgIdAndTxt("holysht:map2alm:TypeError",
                 "Only double and single precision supported.");
