@@ -1,1 +1,5 @@
 mex/build/
+python/build/
+python/holysht/_holysht_core*.so
+python/holysht/__pycache__/
+python/tests/__pycache__/
