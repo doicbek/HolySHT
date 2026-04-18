@@ -84,18 +84,24 @@ syntactic difference is how options are passed:
 <td>
 
 ```matlab
-map = holysht.alm2map(alm, spin, nside, lmax)
-map = holysht.alm2map(alm, spin, nside, lmax, ...
-    'lat_range', [-30 30], 'nthreads', 4)
+map = holysht.alm2map( ...
+    alm, spin, nside, lmax)
+map = holysht.alm2map( ...
+    alm, spin, nside, lmax, ...
+    'lat_range', [-30 30], ...
+    'nthreads', 4)
 ```
 
 </td>
 <td>
 
 ```python
-map = holysht.alm2map(alm, spin, nside, lmax)
-map = holysht.alm2map(alm, spin, nside, lmax,
-    lat_range=(-30, 30), nthreads=4)
+map = holysht.alm2map(
+    alm, spin, nside, lmax)
+map = holysht.alm2map(
+    alm, spin, nside, lmax,
+    lat_range=(-30, 30),
+    nthreads=4)
 ```
 
 </td>
@@ -132,18 +138,24 @@ the total pixel count of selected rings.
 <td>
 
 ```matlab
-alm = holysht.map2alm(map, spin, nside, lmax)
-alm = holysht.map2alm(map, spin, nside, lmax, ...
-    'n_iter', 10, 'lat_range', [-30 30])
+alm = holysht.map2alm( ...
+    map, spin, nside, lmax)
+alm = holysht.map2alm( ...
+    map, spin, nside, lmax, ...
+    'n_iter', 10, ...
+    'lat_range', [-30 30])
 ```
 
 </td>
 <td>
 
 ```python
-alm = holysht.map2alm(map, spin, nside, lmax)
-alm = holysht.map2alm(map, spin, nside, lmax,
-    n_iter=10, lat_range=(-30, 30))
+alm = holysht.map2alm(
+    map, spin, nside, lmax)
+alm = holysht.map2alm(
+    map, spin, nside, lmax,
+    n_iter=10,
+    lat_range=(-30, 30))
 ```
 
 </td>
@@ -201,42 +213,47 @@ run('setup_holysht.m');
 
 nside = 128;
 lmax  = 2 * nside;
-nalm  = (lmax + 1) * (lmax + 2) / 2;
+nalm  = (lmax+1) * (lmax+2) / 2;
 
 rng(42);
-alm = randn(1, nalm) + 1i * randn(1, nalm);
+alm = randn(1, nalm) ...
+    + 1i * randn(1, nalm);
 alm(1:lmax+1) = real(alm(1:lmax+1));
 
-map  = holysht.alm2map(alm, 0, nside, lmax);
-alm2 = holysht.map2alm(map, 0, nside, lmax, ...
+map  = holysht.alm2map( ...
+    alm, 0, nside, lmax);
+alm2 = holysht.map2alm( ...
+    map, 0, nside, lmax, ...
     'n_iter', 10);
 
-err = norm(alm(:) - alm2(:)) / norm(alm(:));
-fprintf('Round-trip error: %.2e\n', err);
+err = norm(alm(:)-alm2(:)) ...
+    / norm(alm(:));
+fprintf('Error: %.2e\n', err);
 ```
 
 </td>
 <td>
 
 ```python
-import numpy as np
-import holysht
+import numpy as np, holysht
 
 nside = 128
 lmax  = 2 * nside
-nalm  = (lmax + 1) * (lmax + 2) // 2
+nalm  = (lmax+1) * (lmax+2) // 2
 
 rng = np.random.default_rng(42)
-alm = rng.standard_normal((1, nalm)) \
-    + 1j * rng.standard_normal((1, nalm))
+alm = rng.standard_normal((1, nalm))\
+    + 1j*rng.standard_normal((1, nalm))
 alm[:, :lmax+1] = alm[:, :lmax+1].real
 
-map  = holysht.alm2map(alm, 0, nside, lmax)
-alm2 = holysht.map2alm(map, 0, nside, lmax,
-    n_iter=10)
+map  = holysht.alm2map(
+    alm, 0, nside, lmax)
+alm2 = holysht.map2alm(
+    map, 0, nside, lmax, n_iter=10)
 
-err = np.linalg.norm(alm - alm2) / np.linalg.norm(alm)
-print(f'Round-trip error: {err:.2e}')
+err = (np.linalg.norm(alm - alm2)
+     / np.linalg.norm(alm))
+print(f'Error: {err:.2e}')
 ```
 
 </td>
@@ -255,16 +272,20 @@ Both give ~1e-12 relative error.
 ```matlab
 nside = 64;
 lmax  = 2 * nside;
-nalm  = (lmax + 1) * (lmax + 2) / 2;
+nalm  = (lmax+1) * (lmax+2) / 2;
 
-alm_EB = randn(2, nalm) + 1i * randn(2, nalm);
-alm_EB(:, 1:lmax+1) = real(alm_EB(:, 1:lmax+1));
-alm_EB(:, 1) = 0;       % l=0, m=0
-alm_EB(:, 2) = 0;       % l=1, m=0
-alm_EB(:, lmax+2) = 0;  % l=1, m=1
+alm_EB = randn(2, nalm) ...
+       + 1i * randn(2, nalm);
+alm_EB(:,1:lmax+1) = ...
+    real(alm_EB(:,1:lmax+1));
+alm_EB(:, 1) = 0;      % l=0,m=0
+alm_EB(:, 2) = 0;      % l=1,m=0
+alm_EB(:, lmax+2) = 0; % l=1,m=1
 
-map_QU  = holysht.alm2map(alm_EB, 2, nside, lmax);
-alm_rec = holysht.map2alm(map_QU, 2, nside, lmax, ...
+map_QU = holysht.alm2map( ...
+    alm_EB, 2, nside, lmax);
+alm_rec = holysht.map2alm( ...
+    map_QU, 2, nside, lmax, ...
     'n_iter', 10);
 ```
 
@@ -274,17 +295,21 @@ alm_rec = holysht.map2alm(map_QU, 2, nside, lmax, ...
 ```python
 nside = 64
 lmax  = 2 * nside
-nalm  = (lmax + 1) * (lmax + 2) // 2
+nalm  = (lmax+1) * (lmax+2) // 2
 
-alm_EB = rng.standard_normal((2, nalm)) \
-       + 1j * rng.standard_normal((2, nalm))
-alm_EB[:, :lmax+1] = alm_EB[:, :lmax+1].real
-alm_EB[:, 0] = 0        # l=0, m=0
-alm_EB[:, 1] = 0        # l=1, m=0
-alm_EB[:, lmax+1] = 0   # l=1, m=1
+alm_EB = (
+    rng.standard_normal((2, nalm))
+  + 1j*rng.standard_normal((2, nalm)))
+alm_EB[:,:lmax+1] = \
+    alm_EB[:,:lmax+1].real
+alm_EB[:, 0] = 0   # l=0, m=0
+alm_EB[:, 1] = 0   # l=1, m=0
+alm_EB[:,lmax+1]=0  # l=1, m=1
 
-map_QU  = holysht.alm2map(alm_EB, 2, nside, lmax)
-alm_rec = holysht.map2alm(map_QU, 2, nside, lmax,
+map_QU = holysht.alm2map(
+    alm_EB, 2, nside, lmax)
+alm_rec = holysht.map2alm(
+    map_QU, 2, nside, lmax,
     n_iter=10)
 ```
 
@@ -305,14 +330,14 @@ The batch dimension is parallelized across threads.
 ```matlab
 N = 100;
 alm_batch = randn(N, 1, nalm) ...
-          + 1i * randn(N, 1, nalm);
+    + 1i * randn(N, 1, nalm);
 alm_batch(:,1,1:lmax+1) = ...
-    real(alm_batch(:,1,1:lmax+1));
+  real(alm_batch(:,1,1:lmax+1));
 
 map_batch = holysht.alm2map( ...
     alm_batch, 0, nside, lmax);
 alm_rec = holysht.map2alm( ...
-    map_batch, 0, nside, lmax, ...
+    map_batch, 0, nside, lmax,...
     'n_iter', 3);
 ```
 
@@ -321,10 +346,12 @@ alm_rec = holysht.map2alm( ...
 
 ```python
 N = 100
-alm_batch = rng.standard_normal((N, 1, nalm)) \
-          + 1j * rng.standard_normal((N, 1, nalm))
+alm_batch = (
+  rng.standard_normal((N,1,nalm))
+  + 1j*rng.standard_normal(
+      (N, 1, nalm)))
 alm_batch[:, 0, :lmax+1] = \
-    alm_batch[:, 0, :lmax+1].real
+  alm_batch[:, 0, :lmax+1].real
 
 map_batch = holysht.alm2map(
     alm_batch, 0, nside, lmax)
@@ -348,24 +375,28 @@ Restrict the transform to a band of HEALPix rings by geographic latitude
 <td>
 
 ```matlab
-map_band = holysht.alm2map(alm, 0, ...
-    nside, lmax, 'lat_range', [-30, 30]);
+map_band = holysht.alm2map( ...
+    alm, 0, nside, lmax, ...
+    'lat_range', [-30, 30]);
 
-alm_band = holysht.map2alm(map_band, ...
-    0, nside, lmax, ...
-    'lat_range', [-30, 30], 'n_iter', 3);
+alm_band = holysht.map2alm( ...
+    map_band, 0, nside, lmax,...
+    'lat_range', [-30, 30], ...
+    'n_iter', 3);
 ```
 
 </td>
 <td>
 
 ```python
-map_band = holysht.alm2map(alm, 0,
-    nside, lmax, lat_range=(-30, 30))
+map_band = holysht.alm2map(
+    alm, 0, nside, lmax,
+    lat_range=(-30, 30))
 
-alm_band = holysht.map2alm(map_band,
-    0, nside, lmax,
-    lat_range=(-30, 30), n_iter=3)
+alm_band = holysht.map2alm(
+    map_band, 0, nside, lmax,
+    lat_range=(-30, 30),
+    n_iter=3)
 ```
 
 </td>
@@ -382,25 +413,33 @@ Input precision propagates to output:
 <td>
 
 ```matlab
-alm_s = single(randn(1, nalm)) ...
-      + 1i * single(randn(1, nalm));
-alm_s(1:lmax+1) = real(alm_s(1:lmax+1));
+alm_s = single(randn(1,nalm))...
+  + 1i * single(randn(1,nalm));
+alm_s(1:lmax+1) = ...
+    real(alm_s(1:lmax+1));
 
-map_s  = holysht.alm2map(alm_s, 0, nside, lmax);
-alm_s2 = holysht.map2alm(map_s, 0, nside, lmax);
+map_s  = holysht.alm2map( ...
+    alm_s, 0, nside, lmax);
+alm_s2 = holysht.map2alm( ...
+    map_s, 0, nside, lmax);
 ```
 
 </td>
 <td>
 
 ```python
-alm_s = (rng.standard_normal((1, nalm))
-       + 1j * rng.standard_normal((1, nalm))
-       ).astype(np.complex64)
-alm_s[:, :lmax+1] = alm_s[:, :lmax+1].real
+alm_s = (
+  rng.standard_normal((1, nalm))
+  + 1j*rng.standard_normal(
+      (1, nalm))
+  ).astype(np.complex64)
+alm_s[:,:lmax+1] = \
+    alm_s[:,:lmax+1].real
 
-map_s  = holysht.alm2map(alm_s, 0, nside, lmax)
-alm_s2 = holysht.map2alm(map_s, 0, nside, lmax)
+map_s = holysht.alm2map(
+    alm_s, 0, nside, lmax)
+alm_s2 = holysht.map2alm(
+    map_s, 0, nside, lmax)
 ```
 
 </td>
@@ -409,21 +448,18 @@ alm_s2 = holysht.map2alm(map_s, 0, nside, lmax)
 
 ## Performance
 
-Benchmark on an Intel Xeon Platinum 8358, comparing HolySHT (Python)
-against healpy 1.19 for spin-0 transforms. Dashed lines show 8-thread
-results.
+Benchmark on an Intel Xeon Platinum 8358 (8 cores), comparing
+HolySHT (Python) against healpy 1.19 for spin-0 transforms.
 
 ![Benchmark](benchmark.png)
 
-**Top row:** HolySHT is 1.5--4.7x faster than healpy single-threaded,
-with the advantage growing at higher resolution. At nside=2048,
-`alm2map` takes 2.9 s vs 13.7 s and `map2alm` takes 20.9 s vs 94.1 s.
+**Top row:** HolySHT is 1.1--2.8x faster than healpy, with the
+advantage growing at higher resolution. At nside=2048, `alm2map`
+takes 6.1 s vs 16.8 s and `map2alm` takes 40.4 s vs 106.5 s.
 
-**Bottom row:** Batching multiple maps into a single call reuses FFT
-plans across the batch dimension, reducing `map2alm` per-map cost by
-~19% even single-threaded. For moderate nside (256), threading overhead
-dominates over parallelism gains on single maps -- batching is the
-better strategy for throughput. healpy has no native batch mode.
+**Bottom row:** Batching multiple maps into a single call has no
+per-map overhead -- cost stays flat from N=1 to N=128. healpy has
+no native batch mode.
 
 ## Tests
 

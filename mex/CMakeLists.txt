@@ -70,7 +70,7 @@ set_target_properties(ducc0_static PROPERTIES
 if(MSVC)
     target_compile_options(ducc0_static PRIVATE /O2)
 else()
-    target_compile_options(ducc0_static PRIVATE -O3 -march=native -ffast-math)
+    target_compile_options(ducc0_static PRIVATE -O3 -march=native -mno-avx512f -ffast-math)
 endif()
 
 if(WIN32)
