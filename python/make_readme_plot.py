@@ -55,6 +55,7 @@ gs = fig.add_gridspec(2, 3, hspace=0.38, wspace=0.35,
 # -- alm2map --
 ax1 = fig.add_subplot(gs[0, 0])
 ax1.loglog(nsides, hp_a2m_1t, 'o-',  color=C_HP, label='healpy (1 thr)', lw=2, ms=6)
+ax1.loglog(nsides, hp_a2m_8t, 'o--', color=C_HP, label='healpy (8 thr)', lw=1.5, ms=5, alpha=0.6)
 ax1.loglog(nsides, hs_a2m_1t, 's-',  color=C_HS, label='HolySHT (1 thr)', lw=2, ms=6)
 ax1.loglog(nsides, hs_a2m_8t, 's--', color=C_HS, label='HolySHT (8 thr)', lw=1.5, ms=5, alpha=0.6)
 ax1.set_xlabel('nside')
@@ -68,6 +69,7 @@ ax1.xaxis.set_major_formatter(ticker.ScalarFormatter())
 # -- map2alm --
 ax2 = fig.add_subplot(gs[0, 1])
 ax2.loglog(nsides, hp_m2a_1t, 'o-',  color=C_HP, label='healpy (1 thr)', lw=2, ms=6)
+ax2.loglog(nsides, hp_m2a_8t, 'o--', color=C_HP, label='healpy (8 thr)', lw=1.5, ms=5, alpha=0.6)
 ax2.loglog(nsides, hs_m2a_1t, 's-',  color=C_HS, label='HolySHT (1 thr)', lw=2, ms=6)
 ax2.loglog(nsides, hs_m2a_8t, 's--', color=C_HS, label='HolySHT (8 thr)', lw=1.5, ms=5, alpha=0.6)
 ax2.set_xlabel('nside')
