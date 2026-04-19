@@ -36,6 +36,7 @@
 #include "ducc0_mex_utils.h"
 #include "ducc0/sht/sht.h"
 #include "ducc0/infra/error_handling.h"
+#include "ducc0/infra/threading.h"
 #include <vector>
 #include <complex>
 #include <array>
@@ -231,8 +232,22 @@ static void map2alm_impl(
     }
 }
 
+static void ensure_thread_pool()
+{
+    /* SLURM sets OMP_NUM_THREADS=1 which caps DUCC's thread pool.
+       Resize to match the actual CPU affinity. */
+    static bool done = false;
+    if (!done) {
+        size_t hw = ducc0::detail_threading::available_hardware_threads();
+        if (hw > ducc0::detail_threading::thread_pool_size())
+            ducc0::resize_thread_pool(hw);
+        done = true;
+    }
+}
+
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
+    ensure_thread_pool();
     try {
         if (nrhs < 10) {
             mexErrMsgIdAndTxt("holysht:map2alm:InputError",

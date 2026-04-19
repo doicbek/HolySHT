@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.15)
 
 project(holysht_matlab_mex)
 
+find_package(Threads REQUIRED)
+
 # Find MATLAB
 find_program(MATLAB_EXECUTABLE matlab PATHS
     "C:/Program Files/MATLAB/*/bin"
@@ -123,6 +125,7 @@ foreach(mex_file ${MEX_SOURCES})
                 ${mex_file}
                 -L${CMAKE_CURRENT_BINARY_DIR}
                 -lducc0_static
+                -lpthread
             DEPENDS ${mex_file} ${CMAKE_CURRENT_SOURCE_DIR}/ducc0_mex_utils.h ${WRAPPER_SCRIPT} ducc0_static
             COMMENT "Building MEX file ${mex_name}.${MEX_EXT}"
             VERBATIM

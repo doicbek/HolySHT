@@ -20,6 +20,7 @@
 
 #include "ducc0/sht/sht.h"
 #include "ducc0/infra/error_handling.h"
+#include "ducc0/infra/threading.h"
 
 #include <vector>
 #include <complex>
@@ -320,6 +321,16 @@ static py::array map2alm_impl(
 
 PYBIND11_MODULE(_holysht_core, m) {
     m.doc() = "HolySHT: fast HEALPix spherical harmonic transforms (C++ backend)";
+
+    /* Ensure the DUCC thread pool matches the actual number of available CPUs.
+       SLURM sets OMP_NUM_THREADS=1 by default, which causes DUCC to initialize
+       a single-threaded pool even when multiple cores are allocated.  We detect
+       the true CPU count from the process affinity mask and resize the pool. */
+    {
+        size_t hw = ducc0::detail_threading::available_hardware_threads();
+        if (hw > ducc0::detail_threading::thread_pool_size())
+            ducc0::resize_thread_pool(hw);
+    }
 
     m.def("alm2map_f64", &alm2map_impl<double>,
           py::arg("alm"), py::arg("lmax"), py::arg("spin"),

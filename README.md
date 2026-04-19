@@ -453,13 +453,18 @@ HolySHT (Python) against healpy 1.19 for spin-0 transforms.
 
 ![Benchmark](benchmark.png)
 
-**Top row:** HolySHT is 1.1--2.8x faster than healpy, with the
-advantage growing at higher resolution. At nside=2048, `alm2map`
-takes 6.1 s vs 16.8 s and `map2alm` takes 40.4 s vs 106.5 s.
+**Top row:** Single-threaded, HolySHT is 1.8--2.9x faster than healpy.
+With 8 threads the gap widens dramatically: at nside=2048, `alm2map`
+takes 0.67 s vs healpy's 13.7 s (**20x**) and `map2alm` takes 6.5 s
+vs 97.0 s (**15x**).  HolySHT automatically detects the number of
+available cores from the process CPU affinity, so multithreading works
+out of the box under SLURM even when `OMP_NUM_THREADS=1`.
 
 **Bottom row:** Batching multiple maps into a single call has no
-per-map overhead -- cost stays flat from N=1 to N=128. healpy has
-no native batch mode.
+per-map overhead single-threaded.  With 8 threads, batching enables
+additional parallelism: per-map cost drops ~5x for `alm2map` and ~4x
+for `map2alm` as N grows from 1 to 128.  healpy has no native batch
+mode.
 
 ## Tests
 
